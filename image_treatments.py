@@ -586,7 +586,7 @@ if __name__ == "__main__":
     DEM_path = Path(os.getenv("DEM_PATH"))
     print(image_folder)
     output_folder = image_folder /  "georef_precise"
-
+    print(output_folder.exists())
     os.makedirs(output_folder, exist_ok=True)
 
 
@@ -629,4 +629,4 @@ if __name__ == "__main__":
             print(f" Full GeoTIFF: {output_path}")
             print(f" Cropped GeoTIFF: {output_path_cropped}")
         else:
-            print("\n FAILED")
+            print("\n FAILED")            
