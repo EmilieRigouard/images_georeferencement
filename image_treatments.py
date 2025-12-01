@@ -2,6 +2,7 @@
 """
 Pixel-by-pixel georeferencing using DEM
 Based on OpenDroneMap techniques
+With magnetic declination correction
 """
 
 from PIL import Image
@@ -20,13 +21,24 @@ from datetime import datetime
 import cv2
 import rasterio.windows
 from pathlib import Path
+from datetime import datetime
+from dateutil import parser
+
+# Import for magnetic declination
+try:
+    from geomag import declination
+    GEOMAG_AVAILABLE = True
+except ImportError:
+    GEOMAG_AVAILABLE = False
+    print("[WARN] geomag module not available. Install with: pip install geomag")
 
 
 class ImageDrone:
     """Georeference DJI drone images with RTK precision"""
     
     def __init__(self, image_path, DEM_path=None, epsg_code=32738,
-                 sensor_width_mm=13.2, sensor_height_mm=8.8, focal_length_mm=8.8):
+                 sensor_width_mm=13.2, sensor_height_mm=8.8, focal_length_mm=8.8,
+                 use_magnetic_correction=True):
         
         self.image_path = image_path
         self.DEM_path = DEM_path
@@ -34,6 +46,7 @@ class ImageDrone:
         self.sensor_width_mm = sensor_width_mm
         self.sensor_height_mm = sensor_height_mm
         self.focal_length_mm = focal_length_mm
+        self.use_magnetic_correction = use_magnetic_correction
         
         # Metadata from XMP
         self.lat = None
@@ -43,9 +56,15 @@ class ImageDrone:
         self.yaw = None
         self.pitch = None
         self.roll = None
+        self.yaw_drone = None
+        self.pitch_drone = None
+        self.roll_drone = None
         self.k1 = self.k2 = self.k3 = 0.0
         self.p1 = self.p2 = 0.0
         self.date_taken = None
+        
+        # Magnetic declination
+        self.declination = 0.0
         
         # Lever arm
         self.lever_x =  0.19
@@ -104,6 +123,7 @@ class ImageDrone:
 
         lat = lon = alt_abs = alt_rel = 0.0
         yaw = pitch = roll = 0.0
+        yaw_drone = pitch_drone = roll_drone = 0.0
         k1 = k2 = k3 = 0.0
         p1 = p2 = 0.0
         date_taken = None
@@ -126,6 +146,12 @@ class ImageDrone:
                     pitch = float(v)
                 elif 'GimbalRollDegree' in k:
                     roll = float(v)
+                elif 'FlightYawDegree' in k:
+                    yaw_drone = float(v)
+                elif 'FlightPitchDegree' in k:
+                    pitch_drone = float(v)
+                elif 'FlightRollDegree' in k:
+                    roll_drone = float(v)
                 elif 'CalibratedOpticalCenterX' in k:
                     cx_calib = float(v)
                 elif 'CalibratedOpticalCenterY' in k:
@@ -144,6 +170,9 @@ class ImageDrone:
         self.yaw = math.radians(yaw)
         self.pitch = math.radians(pitch)
         self.roll = math.radians(roll)
+        self.yaw_drone = math.radians(yaw_drone)
+        self.pitch_drone = math.radians(pitch_drone)
+        self.roll_drone = math.radians(roll_drone)
         self.k1, self.k2, self.k3 = k1, k2, k3
         self.p1, self.p2 = p1, p2
         self.fx_calib = fx_calib
@@ -154,8 +183,59 @@ class ImageDrone:
 
         print(f"Position: Lat={self.lat:.8f}°, Lon={self.lon:.8f}°, Alt={self.altitude_absolute:.2f} m")
         print(f"Gimbal: Yaw={math.degrees(self.yaw):.2f}°, Pitch={math.degrees(self.pitch):.2f}°, Roll={math.degrees(self.roll):.2f}°")
+        print(f"Flight: Yaw={math.degrees(self.yaw_drone):.2f}°, Pitch={math.degrees(self.pitch_drone):.2f}°, Roll={math.degrees(self.roll_drone):.2f}°")
         return True
     
+    def find_declination(self):
+        """
+        Calculate magnetic declination for the image location and date.
+        Compatible avec la version actuelle de geomag (datetime.date obligatoire).
+        """
+
+        if not self.date_taken:
+            print("[WARN] No date → skipping magnetic declination")
+            self.declination = 0.0
+            return False
+
+        if not GEOMAG_AVAILABLE:
+            print("[WARN] geomag library not available → skipping magnetic declination")
+            self.declination = 0.0
+            return False
+
+        # --- Parse EXIF/XMP date ---
+        raw_date = self.date_taken.strip()
+        print(f"[DEBUG] RAW DATE = {raw_date}")
+
+        try:
+            dt = parser.parse(raw_date)
+            dt_date = dt.date()  # important !
+            print(f"[DEBUG] Parsed date: {dt_date}")
+        except Exception as e:
+            print("[ERROR] Could not parse EXIF/XMP date:", raw_date, e)
+            self.declination = 0.0
+            return False
+
+        # --- Calculate magnetic declination ---
+        try:
+            dec = declination(self.lat, self.lon, self.altitude_absolute, dt_date)
+            self.declination = dec
+            print(f"[INFO] Magnetic declination = {dec:.2f}°")
+
+            # --- Correct yaw ---
+            if self.use_magnetic_correction:
+                d_rad = math.radians(dec)
+                self.yaw       += d_rad
+                self.yaw_drone += d_rad
+                print(f"[INFO] Yaw corrected +{dec:.2f}°")
+                print(f"       New Gimbal Yaw: {math.degrees(self.yaw):.2f}°")
+                print(f"       New Drone Yaw : {math.degrees(self.yaw_drone):.2f}°")
+
+            return True
+
+        except Exception as e:
+            print("[ERROR] Declination calculation failed:", e)
+            self.declination = 0.0
+            return False
     
     def load_image(self):
         """Load image with OpenCV"""
@@ -175,58 +255,7 @@ class ImageDrone:
 
         print(f"Image: {self.width_image_loaded} x {self.height_image_loaded} px, {self.bands} bands")
         return True
-    
-    
-    # def undistort_precise(self, image, fx=None, fy=None, cx=None, cy=None,
-    #                       k1=0.0, k2=0.0, p1=0.0, p2=0.0, k3=0.0):
-    #     """Undistort with radial + tangential distortion"""
-    #     height, width = image.shape[:2]
-    #     K = np.array([[fx, 0, cx],
-    #                   [0, fy, cy],
-    #                   [0, 0, 1]], dtype=np.float64)
-    #     D = np.array([k1, k2, p1, p2, k3], dtype=np.float64)
-
-    #     # map_x, map_y = cv2.initUndistortRectifyMap(
-    #     #     cameraMatrix=K, distCoeffs=D, R=None, newCameraMatrix=K,
-    #     #     size=(width, height), m1type=cv2.CV_32FC1
-    #     # )
-
-    #     # image_undistorted = cv2.remap(
-    #     #     image, map_x, map_y,
-    #     #     interpolation=cv2.INTER_CUBIC,
-    #     #     borderMode=cv2.BORDER_CONSTANT,
-    #     #     borderValue=0
-    #     # )
-    #     image_undistorted = cv2.undistort(image, K, D)
-
-    #     return image_undistorted, K
-    
-    
-    # def correction_distortion(self):
-    #     """Apply distortion correction"""
-    #     if self.fx_calib and self.fy_calib and self.cx_calib and self.cy_calib:
-    #         fx, fy, cx, cy = self.fx_calib, self.fy_calib, self.cx_calib, self.cy_calib
-    #     else:
-    #         fx = self.focal_length_mm * self.width_image_loaded / self.sensor_width_mm
-    #         fy = self.focal_length_mm * self.height_image_loaded / self.sensor_height_mm
-    #         cx = self.width_image_loaded / 2.0
-    #         cy = self.height_image_loaded / 2.0
-
-    #     image_undistorted, K_used = self.undistort_precise(
-    #         self.image_rgb,
-    #         fx=fx, fy=fy, cx=cx, cy=cy,
-    #         k1=self.k1, k2=self.k2, p1=self.p1, p2=self.p2, k3=self.k3
-    #     )
-
-    #     self.image_undistorted = image_undistorted
-    #     self.K = K_used
-    #     try:
-    #         self.K_inv = np.linalg.inv(K_used)
-    #     except Exception:
-    #         self.K_inv = None
-
-    #     self.height_image_undistorted, self.width_image_undistorted = image_undistorted.shape[:2]
-    #     return True
+  
     
     def correction_distortion(self):
         """Apply distortion correction"""
@@ -245,12 +274,9 @@ class ImageDrone:
         
         h, w = self.image_rgb.shape[:2]
         new_K, roi = cv2.getOptimalNewCameraMatrix(K, D, (w, h), alpha=1)
-        # alpha=0 : crop max 
-        # alpha=1 : keep all (with black zones)
         
         image_undistorted = cv2.undistort(self.image_rgb, K, D, None, new_K)
    
-    
         self.image_undistorted = image_undistorted
         self.new_K = new_K  
         try:
@@ -332,7 +358,7 @@ class ImageDrone:
     def calculate_rotation_matrix(self):
         """Build rotation matrix from gimbal angles"""
         self.pitch += math.radians(90)
-    
+  
         Rz = np.array([
             [math.cos(self.yaw), math.sin(self.yaw), 0],
             [- math.sin(self.yaw), math.cos(self.yaw), 0],
@@ -460,7 +486,6 @@ class ImageDrone:
             processed = 0
             
             print("[INFO] Computing GCPs...")
-
                        
             for row in range(0, self.height_image_undistorted, subsample):
                 for col in range(0, self.width_image_undistorted, subsample):
@@ -581,16 +606,16 @@ class ImageDrone:
 
 if __name__ == "__main__":
 
-    load_dotenv() # Load secrets from .env
+    load_dotenv()
     image_folder = Path(os.getenv("IMAGE_FOLDER"))
     DEM_path = Path(os.getenv("DEM_PATH"))
     print(image_folder)
-    output_folder = image_folder /  "georef_precise"
+    output_folder = image_folder / "georef_precise"
     print(output_folder.exists())
     os.makedirs(output_folder, exist_ok=True)
 
+    target_index = 136
 
-    target_index = 52
     prefix = os.path.basename(image_folder)
     img_number = str(target_index).zfill(4)
     image_name = f"{prefix}_{img_number}.jpg"
@@ -599,10 +624,17 @@ if __name__ == "__main__":
     if not os.path.exists(image_path):
         print(f"[ERR] Image {image_name} not found.")
     else:
-        drone_image = ImageDrone(image_path, DEM_path=DEM_path, epsg_code=32738)  
+        # Enable magnetic declination correction
+        drone_image = ImageDrone(
+            image_path, 
+            DEM_path=DEM_path, 
+            epsg_code=32738,
+            use_magnetic_correction=True
+        )  
         
         print("\n=== STEP 1: PREPARATION ===")
         drone_image.extract_metadata()
+        drone_image.find_declination()  
         drone_image.load_image()
         drone_image.correction_distortion()
         drone_image.calculate_rotation_matrix()
@@ -620,13 +652,13 @@ if __name__ == "__main__":
         
         if success:
             print("\n=== STEP 3: CROP CENTER 75% ===")
-            output_cropped = os.path.splitext(image_name)[0] + "_PRECISE_CROPPED6.tif"
+            output_cropped = os.path.splitext(image_name)[0] + "_PRECISE_CROPPED.tif"
             output_path_cropped = os.path.join(output_folder, output_cropped)
             
             drone_image.crop_geotiff_center_75_percent(output_path, output_path_cropped)
             
-            print("\n SUCCESS!")
-            print(f" Full GeoTIFF: {output_path}")
-            print(f" Cropped GeoTIFF: {output_path_cropped}")
+            print("\n✓ SUCCESS!")
+            print(f"  Full GeoTIFF: {output_path}")
+            print(f"  Cropped GeoTIFF: {output_path_cropped}")
         else:
-            print("\n FAILED")            
+            print("\n✗ FAILED")

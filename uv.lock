@@ -91,25 +91,48 @@ wheels = [
 ]
 
 [[package]]
+name = "exiftool-wrapper"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c5/76/f0da48a88083bd2eb67ea0b764441167dff6aa4f646fa25d0489bec19b4e/exiftool_wrapper-0.3.0.tar.gz", hash = "sha256:990c5b2056ab75a68593439def6ba7a8fcb126efaefbb353f3ac58fba61e9f07", size = 23779, upload-time = "2025-09-25T02:53:44.158Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b4/bf/ce03fc3e667498e94e2ea8fd4fe85079727eb71af334ebde9cc66b3de6cd/exiftool_wrapper-0.3.0-py3-none-any.whl", hash = "sha256:5a079dd3fa2282563e35ee7da3a0e5f1a1930d7c5e8b7c436f901e17b37ed56d", size = 2505, upload-time = "2025-09-25T02:53:42.433Z" },
+]
+
+[[package]]
+name = "geomag"
+version = "0.9.2015"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0d/1f/95b5d9db29b89735af88713e7fb49b20052d1ce5a05e8e4ea0f2f96da4b3/geomag-0.9.2015.zip", hash = "sha256:fa3f7544beca2dd706c3078d9d58cb35734d00de2591270a335216bb8ba310d5", size = 8071, upload-time = "2014-12-18T01:15:53.201Z" }
+
+[[package]]
 name = "images-georeferencement"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "dotenv" },
+    { name = "exiftool-wrapper" },
+    { name = "geomag" },
     { name = "numpy" },
     { name = "opencv-python" },
     { name = "pillow" },
+    { name = "pyexiftool" },
     { name = "pyproj" },
+    { name = "python-dateutil" },
     { name = "rasterio" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "dotenv", specifier = ">=0.9.9" },
+    { name = "exiftool-wrapper", specifier = ">=0.3.0" },
+    { name = "geomag", specifier = ">=0.9.2015" },
     { name = "numpy", specifier = ">=2.3.5" },
     { name = "opencv-python", specifier = ">=4.11.0.86" },
     { name = "pillow", specifier = ">=12.0.0" },
+    { name = "pyexiftool", specifier = ">=0.5.6" },
     { name = "pyproj", specifier = ">=3.7.2" },
+    { name = "python-dateutil", specifier = ">=2.9.0.post0" },
     { name = "rasterio", specifier = ">=1.4.3" },
 ]
 
@@ -241,6 +264,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pyexiftool"
+version = "0.5.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5e/48/406da6691d15abf3c8d399bce8bc588709a5b54e857fd7c22dad2f90c33c/PyExifTool-0.5.6.tar.gz", hash = "sha256:22a972c1c212d1ad5f61916fded5057333dcc48fb8e42eed12d2ff9665b367ae", size = 56365, upload-time = "2023-10-22T23:18:18.819Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fc/b9/175e9a1f8f3f94b22f622f0fcac853ae2c43cb4ac6034f849269c6086dac/PyExifTool-0.5.6-py3-none-any.whl", hash = "sha256:ac7d7836d2bf373f20aa558528f6b2222c4c0d896ed28c951a3ff8e6cec05a87", size = 51243, upload-time = "2023-10-22T23:18:16.614Z" },
+]
+
+[[package]]
 name = "pyparsing"
 version = "3.2.5"
 source = { registry = "https://pypi.org/simple" }
@@ -297,6 +329,18 @@ wheels = [
 ]
 
 [[package]]
+name = "python-dateutil"
+version = "2.9.0.post0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "six" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/66/c0/0c8b6ad9f17a802ee498c46e004a0eb49bc148f2fd230864601a86dcf6db/python-dateutil-2.9.0.post0.tar.gz", hash = "sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3", size = 342432, upload-time = "2024-03-01T18:36:20.211Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl", hash = "sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427", size = 229892, upload-time = "2024-03-01T18:36:18.57Z" },
+]
+
+[[package]]
 name = "python-dotenv"
 version = "1.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -325,4 +369,13 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/bb/a8/3b6b11923300d6835453d1157fabb518338067a67366c5c52e9df9a2314f/rasterio-1.4.3-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:98a9c89eade8c779e8ac1e525269faaa18c6b9818fc3c72cfc4627df71c66d0d", size = 18729960, upload-time = "2024-12-02T14:49:06.423Z" },
     { url = "https://files.pythonhosted.org/packages/05/19/94d6c66184c7d0f9374330c714f62c147dbb53eda9efdcc8fc6e2ac454c5/rasterio-1.4.3-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:d9bab1a0bb22b8bed1db34b5258db93d790ed4e61ef21ac055a7c6933c8d5e84", size = 22237518, upload-time = "2024-12-02T14:49:09.155Z" },
     { url = "https://files.pythonhosted.org/packages/df/88/9db5f49ebfdd9c12365e4cac76c34ccb1a642b1c8cbab4124b3c681495de/rasterio-1.4.3-cp313-cp313-win_amd64.whl", hash = "sha256:1839960e2f3057a6daa323ccf67b330f8f2f0dbd4a50cc7031e88e649301c5c0", size = 25424949, upload-time = "2024-12-02T14:49:11.742Z" },
+]
+
+[[package]]
+name = "six"
+version = "1.17.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68a0e064b6af791aa332cf192da575fd474ed7d6f16a2/six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81", size = 34031, upload-time = "2024-12-04T17:35:28.174Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
 ]
