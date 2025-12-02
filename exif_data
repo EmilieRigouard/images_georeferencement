@@ -1,8 +1,8 @@
 import subprocess, json
 
 EXIFTOOL = r"C:\Users\emili\Documents\THESE\georeferencement_images_drone\python\images_georeferencement\exiftool.exe.exe"
-IMAGE = r"C:\Users\emili\Documents\THESE\Images_drone\2025_10_Mayotte\25_10_07_01_plage\SURVEY\100_0001\100_0001_0025.jpg"
-
+# IMAGE = r"C:\Users\emili\Documents\THESE\Images_drone\2025_10_Mayotte\25_10_07_01_plage\SURVEY\100_0001\100_0001_0025.jpg"
+IMAGE = r"C:\Users\emili\Documents\THESE\Images_drone\2025_04_Mayotte\100_0001
 result = subprocess.run([EXIFTOOL, IMAGE], capture_output=True, text=True)
 
 print("### STDOUT ###")
