@@ -70,7 +70,7 @@ class ImageDrone:
         self.lever_x = 0
         self.lever_y = 0.036 
         self.lever_z = -0.192
-        
+         
         # Calibrated intrinsics
         self.fx_calib = None
         self.fy_calib = None
@@ -266,6 +266,7 @@ class ImageDrone:
             fy = self.focal_length_mm * self.height_image_loaded / self.sensor_height_mm
             cx = self.width_image_loaded / 2.0
             cy = self.height_image_loaded / 2.0
+        print(f"fx: {fx:.2f}",f"fy: {fy:.2f}" )
     
         K = np.array([[fx, 0, cx],
                       [0, fy, cy],
@@ -375,37 +376,190 @@ class ImageDrone:
         return rotation_matrix
 
 
+    # def ray_dem_intersection(self, pixel_x, pixel_y, dem_dataset, transformer_to_dem):
+    #     """Calculate ray-DEM intersection for a given pixel"""
+    #     if self.K_inv is None:
+    #         return None
+        
+    #     Rotation_camera = self.calculate_rotation_matrix(
+    #         self.yaw, self.pitch, self.roll
+    #     )
+        
+    #     Rotation_drone = self.calculate_rotation_matrix(
+    #         self.yaw_drone, self.pitch_drone, self.roll_drone
+    #     )
+        
+    #     if pixel_x == 0 and pixel_y == 0:  
+    #         print(f"\n[DEBUG] Yaw gimbal: {math.degrees(self.yaw):.2f}°")
+    #         print(f"[DEBUG] Yaw drone: {math.degrees(self.yaw_drone):.2f}°")
+    #         print(f"[DEBUG] Pitch drone: {math.degrees(self.pitch_drone):.2f}°")
+    #         print(f"[DEBUG] ray_world: {ray_world}")
+    #         print(f"[DEBUG] ||ray_world||: {np.linalg.norm(ray_world):.3f}")
+    #         print(f"[DEBUG] trajectory_ground: {trajectory_ground:.2f}m")
+    #         print(f"[DEBUG] Estimated ground hit: ({camera_x + trajectory_ground * ray_world[0]:.2f}, "
+    #             f"{camera_y - trajectory_ground * ray_world[1]:.2f})")
+                
+    #     pixel_source = np.array([pixel_x + 0.5, pixel_y + 0.5, 1.0])
+    #     ray_camera = self.K_inv @ pixel_source
+    #     ray_world = Rotation_camera @ ray_camera
+        
+    #     transformer_wgs84 = Transformer.from_crs("EPSG:4326", f"EPSG:{self.epsg_code}", always_xy=True)
+    #     gps_x, gps_y = transformer_wgs84.transform(self.lon, self.lat)
+    #     gps_z = self.altitude_absolute
+        
+    #     lever_drone = np.array([self.lever_x, self.lever_y, self.lever_z])
+    #     lever_world = Rotation_drone @ lever_drone
+        
+        
+    #     if pixel_x == 0 and pixel_y == 0:
+    #         print(f"[DEBUG] Lever drone: {lever_drone}")
+    #         print(f"[DEBUG] Lever world: {lever_world}")
+    #         print(f"[DEBUG] GPS: ({gps_x:.2f}, {gps_y:.2f}, {gps_z:.2f})")
+    #         print(f"[DEBUG] Camera: ({gps_x + lever_world[0]:.2f}, {gps_y + lever_world[1]:.2f}, {gps_z + lever_world[2]:.2f})")
+        
+    #     camera_x = gps_x + lever_world[0]
+    #     camera_y = gps_y + lever_world[1]
+    #     camera_z = gps_z + lever_world[2]
+        
+    
+    #     if ray_world[2] <= 0:
+    #         return None
+         
+    #     if self.ground_elevation is not None:
+    #         ground_estimate = self.ground_elevation
+    #     else:
+    #         ground_estimate = self.altitude_absolute - abs(self.altitude_relative)
+        
+    #     altitude_diff = camera_z - ground_estimate
+    #     trajectory_ground = altitude_diff / ray_world[2]
+        
+    #     step_size = 0.5
+    #     num_steps = int(trajectory_ground / step_size) + 50
+        
+    #     best_intersection = None
+    #     min_diff = float('inf')
+        
+    #     for i in range(num_steps):
+    #         trajectory = step_size * i
+            
+    #         point_x = camera_x + trajectory * ray_world[0]
+    #         point_y = camera_y + trajectory * ray_world[1]
+    #         point_z = camera_z - trajectory * ray_world[2]
+            
+    #         try:
+    #             dem_x, dem_y = transformer_to_dem.transform(point_x, point_y)
+    #             row, col = dem_dataset.index(dem_x, dem_y)
+
+    #             row_floor = int(np.floor(row))
+    #             col_floor = int(np.floor(col))
+    #             row_frac = row - row_floor
+    #             col_frac = col - col_floor
+                
+    #             if 0 <= row_floor < dem_dataset.height-1 and 0 <= col_floor < dem_dataset.width-1:
+    #                 z11 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor,   row_floor,   1, 1))[0, 0])
+    #                 z21 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor+1, row_floor,   1, 1))[0, 0])
+    #                 z12 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor,   row_floor+1, 1, 1))[0, 0])
+    #                 z22 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor+1, row_floor+1, 1, 1))[0, 0])
+
+    #                 dem_elevation = (
+    #                     z11 * (1-col_frac)*(1-row_frac) +
+    #                     z21 * col_frac*(1-row_frac) +
+    #                     z12 * (1-col_frac)*row_frac +
+    #                     z22 * col_frac*row_frac
+    #                 )
+    #             elif 0 <= row_floor < dem_dataset.height and 0 <= col_floor < dem_dataset.width:
+    #                 dem_elevation = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor, row_floor, 1, 1))[0, 0])
+    #             else:
+    #                 continue
+                
+    #             diff = abs(point_z - dem_elevation)
+                
+    #             if diff < 0.1:
+    #                 return (point_x, point_y, dem_elevation)
+                
+    #             if diff < min_diff:
+    #                 min_diff = diff
+    #                 best_intersection = (point_x, point_y, dem_elevation)
+                
+    #             if point_z < dem_elevation:
+    #                 break
+                    
+    #         except Exception:
+    #             continue
+          
+    #     return best_intersection
+
     def ray_dem_intersection(self, pixel_x, pixel_y, dem_dataset, transformer_to_dem):
         """Calculate ray-DEM intersection for a given pixel"""
         if self.K_inv is None:
             return None
         
-        Rotation = self.calculate_rotation_matrix(self.yaw, self.pitch, self.roll)
-        Rotation_flight = self.calculate_rotation_matrix(self.yaw_drone , self.pitch_drone + math.pi, self.roll_drone)
+        Rotation_camera = self.calculate_rotation_matrix(
+            self.yaw, self.pitch, self.roll
+        )
+        
+        Rotation_drone = self.calculate_rotation_matrix(
+            self.yaw_drone, self.pitch_drone, self.roll_drone
+        )
+        
+        # Calcul du rayon
         pixel_source = np.array([pixel_x + 0.5, pixel_y + 0.5, 1.0])
         ray_camera = self.K_inv @ pixel_source
-        ray_world = Rotation @ ray_camera
+        ray_world_raw = Rotation_camera @ ray_camera
+        ray_world = ray_world_raw / np.linalg.norm(ray_world_raw)  # ← NORMALISATION
         
+        # Transformation GPS
         transformer_wgs84 = Transformer.from_crs("EPSG:4326", f"EPSG:{self.epsg_code}", always_xy=True)
         gps_x, gps_y = transformer_wgs84.transform(self.lon, self.lat)
         gps_z = self.altitude_absolute
         
-        lever_world = Rotation_flight @ np.array([self.lever_x, self.lever_y, self.lever_z])
+        # Lever arm
+        lever_drone = np.array([self.lever_x, self.lever_y, self.lever_z])
+        lever_world = Rotation_drone @ lever_drone
+        
         camera_x = gps_x + lever_world[0]
         camera_y = gps_y + lever_world[1]
         camera_z = gps_z + lever_world[2]
-    
+        
+        # Vérification ray valide
         if ray_world[2] <= 0:
             return None
-         
+        
+        # Calcul trajectory
         if self.ground_elevation is not None:
             ground_estimate = self.ground_elevation
         else:
             ground_estimate = self.altitude_absolute - abs(self.altitude_relative)
         
         altitude_diff = camera_z - ground_estimate
-        trajectory_ground = altitude_diff / ray_world[2]
+        trajectory_ground = abs(altitude_diff / ray_world[2])  # ← abs() ajouté !
         
+        # ===== DEBUG ICI, APRÈS TOUS LES CALCULS =====
+        if pixel_x == 0 and pixel_y == 0:  
+            print(f"\n[DEBUG] === ANGLES ===")
+            print(f"[DEBUG] Yaw gimbal: {math.degrees(self.yaw):.2f}°")
+            print(f"[DEBUG] Yaw drone: {math.degrees(self.yaw_drone):.2f}°")
+            print(f"[DEBUG] Pitch drone: {math.degrees(self.pitch_drone):.2f}°")
+            
+            print(f"\n[DEBUG] === RAY ===")
+            print(f"[DEBUG] ray_world: {ray_world}")
+            print(f"[DEBUG] ||ray_world||: {np.linalg.norm(ray_world):.3f}")
+            
+            print(f"\n[DEBUG] === POSITIONS ===")
+            print(f"[DEBUG] GPS: ({gps_x:.2f}, {gps_y:.2f}, {gps_z:.2f})")
+            print(f"[DEBUG] Lever drone: {lever_drone}")
+            print(f"[DEBUG] Lever world: {lever_world}")
+            print(f"[DEBUG] Camera: ({camera_x:.2f}, {camera_y:.2f}, {camera_z:.2f})")
+            
+            print(f"\n[DEBUG] === TRAJECTORY ===")
+            print(f"[DEBUG] Ground estimate: {ground_estimate:.2f}m")
+            print(f"[DEBUG] Altitude diff: {altitude_diff:.2f}m")
+            print(f"[DEBUG] trajectory_ground: {trajectory_ground:.2f}m")
+            print(f"[DEBUG] Estimated ground hit: ({camera_x + trajectory_ground * ray_world[0]:.2f}, "
+                f"{camera_y + trajectory_ground * ray_world[1]:.2f}, "
+                f"{camera_z - trajectory_ground * ray_world[2]:.2f})")
+        
+        # Boucle de recherche
         step_size = 0.5
         num_steps = int(trajectory_ground / step_size) + 50
         
@@ -416,7 +570,7 @@ class ImageDrone:
             trajectory = step_size * i
             
             point_x = camera_x + trajectory * ray_world[0]
-            point_y = camera_y + trajectory * ray_world[1]
+            point_y = camera_y + trajectory * ray_world[1]  # ← + pour l'instant
             point_z = camera_z - trajectory * ray_world[2]
             
             try:
@@ -459,8 +613,169 @@ class ImageDrone:
                     
             except Exception:
                 continue
-          
+        
         return best_intersection
+
+    # def ray_dem_intersection(self, pixel_x, pixel_y, dem_dataset, transformer_to_dem):
+    #     """Calculate ray-DEM intersection for a given pixel with cm precision"""
+    #     if self.K_inv is None:
+    #         return None
+        
+    #     Rotation_camera = self.calculate_rotation_matrix(
+    #         self.yaw, self.pitch, self.roll
+    #     )
+        
+    #     Rotation_drone = self.calculate_rotation_matrix(
+    #         self.yaw_drone, self.pitch_drone, self.roll_drone
+    #     )
+        
+    #     if pixel_x == 0 and pixel_y == 0:  
+    #         print(f"\n[DEBUG] Yaw gimbal: {math.degrees(self.yaw):.2f}°")
+    #         print(f"[DEBUG] Yaw drone: {math.degrees(self.yaw_drone):.2f}°")
+    #         print(f"[DEBUG] Pitch drone: {math.degrees(self.pitch_drone):.2f}°")
+        
+    #     pixel_source = np.array([pixel_x + 0.5, pixel_y + 0.5, 1.0])
+    #     ray_camera = self.K_inv @ pixel_source
+    #     ray_world = Rotation_camera @ ray_camera
+        
+    #     transformer_wgs84 = Transformer.from_crs("EPSG:4326", f"EPSG:{self.epsg_code}", always_xy=True)
+    #     gps_x, gps_y = transformer_wgs84.transform(self.lon, self.lat)
+    #     gps_z = self.altitude_absolute
+        
+    #     lever_drone = np.array([self.lever_x, self.lever_y, self.lever_z])
+    #     lever_world = Rotation_drone @ lever_drone
+        
+    #     if pixel_x == 0 and pixel_y == 0:
+    #         print(f"[DEBUG] Lever drone: {lever_drone}")
+    #         print(f"[DEBUG] Lever world: {lever_world}")
+    #         print(f"[DEBUG] GPS: ({gps_x:.2f}, {gps_y:.2f}, {gps_z:.2f})")
+    #         print(f"[DEBUG] Camera: ({gps_x + lever_world[0]:.2f}, {gps_y + lever_world[1]:.2f}, {gps_z + lever_world[2]:.2f})")
+        
+    #     camera_x = gps_x + lever_world[0]
+    #     camera_y = gps_y - lever_world[1]
+    #     camera_z = gps_z + lever_world[2]
+
+    #     if ray_world[2] <= 0:
+    #         return None
+        
+    #     if self.ground_elevation is not None:
+    #         ground_estimate = self.ground_elevation
+    #     else:
+    #         ground_estimate = self.altitude_absolute - abs(self.altitude_relative)
+        
+    #     altitude_diff = camera_z - ground_estimate
+    #     trajectory_ground = altitude_diff / ray_world[2]
+        
+    #     # PHASE 1: Recherche grossière avec step_size = 0.5m
+    #     step_size_coarse = 0.5
+    #     num_steps_coarse = int(trajectory_ground / step_size_coarse) + 50
+        
+    #     best_intersection = None
+    #     min_diff = float('inf')
+    #     best_trajectory = 0
+        
+    #     for i in range(num_steps_coarse):
+    #         trajectory = step_size_coarse * i
+            
+    #         point_x = camera_x + trajectory * ray_world[0]
+    #         point_y = camera_y - trajectory * ray_world[1]
+    #         point_z = camera_z - trajectory * ray_world[2]
+            
+    #         try:
+    #             dem_x, dem_y = transformer_to_dem.transform(point_x, point_y)
+    #             row, col = dem_dataset.index(dem_x, dem_y)
+
+    #             row_floor = int(np.floor(row))
+    #             col_floor = int(np.floor(col))
+    #             row_frac = row - row_floor
+    #             col_frac = col - col_floor
+                
+    #             if 0 <= row_floor < dem_dataset.height-1 and 0 <= col_floor < dem_dataset.width-1:
+    #                 z11 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor,   row_floor,   1, 1))[0, 0])
+    #                 z21 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor+1, row_floor,   1, 1))[0, 0])
+    #                 z12 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor,   row_floor+1, 1, 1))[0, 0])
+    #                 z22 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor+1, row_floor+1, 1, 1))[0, 0])
+
+    #                 dem_elevation = (
+    #                     z11 * (1-col_frac)*(1-row_frac) +
+    #                     z21 * col_frac*(1-row_frac) +
+    #                     z12 * (1-col_frac)*row_frac +
+    #                     z22 * col_frac*row_frac
+    #                 )
+    #             elif 0 <= row_floor < dem_dataset.height and 0 <= col_floor < dem_dataset.width:
+    #                 dem_elevation = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor, row_floor, 1, 1))[0, 0])
+    #             else:
+    #                 continue
+                
+    #             diff = abs(point_z - dem_elevation)
+                
+    #             if diff < min_diff:
+    #                 min_diff = diff
+    #                 best_intersection = (point_x, point_y, dem_elevation)
+    #                 best_trajectory = trajectory
+                
+    #             if point_z < dem_elevation:
+    #                 break
+                    
+    #         except Exception:
+    #             continue
+        
+    #     # PHASE 2: Recherche fine autour du meilleur point trouvé
+    #     if best_intersection is not None and min_diff > 0.01:
+    #         step_size_fine = 0.05  # 5cm
+    #         search_range = 2.0  # Recherche sur ±2m autour du meilleur point
+            
+    #         trajectory_start = max(0, best_trajectory - search_range)
+    #         trajectory_end = best_trajectory + search_range
+    #         num_steps_fine = int((trajectory_end - trajectory_start) / step_size_fine)
+            
+    #         for i in range(num_steps_fine):
+    #             trajectory = trajectory_start + step_size_fine * i
+                
+    #             point_x = camera_x + trajectory * ray_world[0]
+    #             point_y = camera_y - trajectory * ray_world[1]
+    #             point_z = camera_z - trajectory * ray_world[2]
+                
+    #             try:
+    #                 dem_x, dem_y = transformer_to_dem.transform(point_x, point_y)
+    #                 row, col = dem_dataset.index(dem_x, dem_y)
+
+    #                 row_floor = int(np.floor(row))
+    #                 col_floor = int(np.floor(col))
+    #                 row_frac = row - row_floor
+    #                 col_frac = col - col_floor
+                    
+    #                 if 0 <= row_floor < dem_dataset.height-1 and 0 <= col_floor < dem_dataset.width-1:
+    #                     z11 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor,   row_floor,   1, 1))[0, 0])
+    #                     z21 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor+1, row_floor,   1, 1))[0, 0])
+    #                     z12 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor,   row_floor+1, 1, 1))[0, 0])
+    #                     z22 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor+1, row_floor+1, 1, 1))[0, 0])
+
+    #                     dem_elevation = (
+    #                         z11 * (1-col_frac)*(1-row_frac) +
+    #                         z21 * col_frac*(1-row_frac) +
+    #                         z12 * (1-col_frac)*row_frac +
+    #                         z22 * col_frac*row_frac
+    #                     )
+    #                 elif 0 <= row_floor < dem_dataset.height and 0 <= col_floor < dem_dataset.width:
+    #                     dem_elevation = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor, row_floor, 1, 1))[0, 0])
+    #                 else:
+    #                     continue
+                    
+    #                 diff = abs(point_z - dem_elevation)
+                    
+    #                 # Seuil à 1cm pour précision centimétrique
+    #                 if diff < 0.01:
+    #                     return (point_x, point_y, dem_elevation)
+                    
+    #                 if diff < min_diff:
+    #                     min_diff = diff
+    #                     best_intersection = (point_x, point_y, dem_elevation)
+                        
+    #             except Exception:
+    #                 continue
+        
+    #     return best_intersection
 
     def georeference_with_dem_precise(self, output_path, subsample=100):
         """
@@ -526,8 +841,11 @@ class ImageDrone:
             transform = from_gcps(rasterio_gcps)
             
             # Fix image orientation
+            # image_to_save = self.image_undistorted
             image_to_save = np.rot90(self.image_undistorted, k=2)
             image_to_save = np.fliplr(image_to_save)
+            # image_to_save = np.flipud(image_to_save)
+            
 
             with rasterio.open(
                 output_path,
@@ -653,7 +971,7 @@ if __name__ == "__main__":
         
         if success:
             print("\n=== STEP 3: CROP CENTER 75% ===")
-            output_cropped = os.path.splitext(image_name)[0] + "_PRECISE_CROPPED6.tif"
+            output_cropped = os.path.splitext(image_name)[0] + "_PRECISE_CROPPED8.tif"
             output_path_cropped = os.path.join(output_folder, output_cropped)
             
             drone_image.crop_geotiff_center_75_percent(output_path, output_path_cropped)
