@@ -357,25 +357,72 @@ class ImageDrone:
         return True
 
 
-    def calculate_rotation_matrix(self,yaw, pitch, roll):
-        """Build rotation matrix"""
-        # pitch += math.radians(90)
+    # def calculate_rotation_matrix(self,yaw, pitch, roll):
+
+    #     if -120 <= math.degrees(pitch) <= -60:
+    #         pitch = math.radians(90) - pitch
+    #     else:
+    #         pitch =  pitch - math.radians(180)
+    #         # pitch = pitch
+
+    #     # pitch += ( math.radians(90))
   
+    #     Rz = np.array([
+    #         [math.cos(yaw), math.sin(yaw), 0],
+    #         [- math.sin(yaw), math.cos(yaw), 0],
+    #         [0, 0, 1]])
+    #     Ry = np.array([
+    #         [math.cos(pitch), 0, math.sin(pitch)],
+    #         [0, 1, 0],
+    #         [- math.sin(pitch), 0, math.cos(pitch)]])
+    #     Rx = np.array([
+    #         [1, 0, 0],
+    #         [0, math.cos(roll), -math.sin(roll)],
+    #         [0, math.sin(roll), math.cos(roll)]])
+    #     rotation_matrix = Rz @ Ry @ Rx
+    #     return rotation_matrix
+
+    def calculate_rotation_matrix(self, yaw, pitch, roll):
+        """
+        Build rotation matrix using DJI/Euler convention
+        Similar to HighAccuracyFOVCalculator method
+        """
+        # Correction pitch selon la plage d'angles
+        # if -120 <= math.degrees(pitch) <= -60:
+        #     pitch_corrected = math.radians(90) - pitch
+        # else:
+        #     pitch_corrected = math.radians(180) - pitch
+        pitch_corrected = pitch
+        # Correction yaw : conversion Est→Nord
+        # DJI: 0° = Est, on veut 0° = Nord
+        yaw_corrected = (math.pi / 2) - yaw
+        
+        # Normalisation yaw entre 0 et 2π
+        yaw_corrected = yaw_corrected % (2 * math.pi)
+        
+        # Matrices de rotation (ordre ZYX)
         Rz = np.array([
-            [math.cos(yaw), math.sin(yaw), 0],
-            [- math.sin(yaw), math.cos(yaw), 0],
-            [0, 0, 1]])
+            [math.cos(yaw_corrected), -math.sin(yaw_corrected), 0],
+            [math.sin(yaw_corrected),  math.cos(yaw_corrected), 0],
+            [0, 0, 1]
+        ])
+        
         Ry = np.array([
-            [math.cos(pitch), 0, math.sin(pitch)],
+            [math.cos(pitch_corrected), 0, math.sin(pitch_corrected)],
             [0, 1, 0],
-            [- math.sin(pitch), 0, math.cos(pitch)]])
+            [-math.sin(pitch_corrected), 0, math.cos(pitch_corrected)]
+        ])
+        
         Rx = np.array([
             [1, 0, 0],
             [0, math.cos(roll), -math.sin(roll)],
-            [0, math.sin(roll), math.cos(roll)]])
+            [0, math.sin(roll), math.cos(roll)]
+        ])
+        
+        # Composition
         rotation_matrix = Rz @ Ry @ Rx
+        
         return rotation_matrix
-
 
     # def ray_dem_intersection(self, pixel_x, pixel_y, dem_dataset, transformer_to_dem):
     #     """Calculate ray-DEM intersection for a given pixel"""
@@ -813,7 +860,7 @@ if __name__ == "__main__":
         
         if success:
             print("\n=== STEP 3: CROP CENTER 75% ===")
-            output_cropped = os.path.splitext(image_name)[0] + "_PRECISE_CROPPED2.tif"
+            output_cropped = os.path.splitext(image_name)[0] + "_PRECISE_CROPPED5.tif"
             output_path_cropped = os.path.join(output_folder, output_cropped)
             
             drone_image.crop_geotiff_center_75_percent(output_path, output_path_cropped)
