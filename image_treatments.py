@@ -93,6 +93,8 @@ class ImageDrone:
         self.K = None
         self.K_inv = None
     
+
+    
     def extract_metadata(self):
         print(f"--- Processing {os.path.basename(self.image_path)} ---")
 
