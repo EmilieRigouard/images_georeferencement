@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "dotenv>=0.9.9",
+    "exifread>=3.5.1",
     "exiftool-wrapper>=0.3.0",
     "geomag>=0.9.2015",
     "numpy>=2.3.5",

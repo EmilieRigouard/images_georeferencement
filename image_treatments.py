@@ -2,7 +2,6 @@
 """
 Pixel-by-pixel georeferencing using DEM
 Based on OpenDroneMap techniques
-With magnetic declination correction
 """
 
 from PIL import Image
@@ -11,7 +10,7 @@ import math
 from dotenv import load_dotenv
 import rasterio
 from rasterio.crs import CRS
-from rasterio.transform import Affine, from_gcps
+from rasterio.transform import Affine, from_gcps, from_bounds
 from rasterio.control import GroundControlPoint
 from pyproj import Transformer
 import os
@@ -23,53 +22,48 @@ import rasterio.windows
 from pathlib import Path
 from datetime import datetime
 from dateutil import parser
-
-# Import for magnetic declination
-try:
-    from geomag import declination
-    GEOMAG_AVAILABLE = True
-except ImportError:
-    GEOMAG_AVAILABLE = False
-    print("[WARN] geomag module not available. Install with: pip install geomag")
+import subprocess
+import json
 
 
 class ImageDrone:
     """Georeference DJI drone images with RTK precision"""
     
-    def __init__(self, image_path, DEM_path=None, epsg_code=32738,
-                 sensor_width_mm=13.2, sensor_height_mm=8.8, focal_length_mm=8.8,
-                 use_magnetic_correction=True):
+    def __init__(self, image_path, exiftool_path, DEM_path=None, epsg_code=32738,
+                 sensor_width_mm=13.2, sensor_height_mm=8.8, focal_length_mm=8.8
+                 ):
         
         self.image_path = image_path
+        self.exiftool_path = exiftool_path
         self.DEM_path = DEM_path
         self.epsg_code = epsg_code
         self.sensor_width_mm = sensor_width_mm
         self.sensor_height_mm = sensor_height_mm
         self.focal_length_mm = focal_length_mm
-        self.use_magnetic_correction = use_magnetic_correction
+
         
         # Metadata from XMP
         self.lat = None
         self.lon = None
         self.altitude_absolute = None
         self.altitude_relative = None
-        self.yaw = None
-        self.pitch = None
-        self.roll = None
+        self.yaw_gimbal = None
+        self.pitch_gimbal = None
+        self.roll_gimbal = None
         self.yaw_drone = None
         self.pitch_drone = None
         self.roll_drone = None
+        self.dewarpflag = None
         self.k1 = self.k2 = self.k3 = 0.0
         self.p1 = self.p2 = 0.0
         self.date_taken = None
         
-        # Magnetic declination
-        self.declination = 0.0
-        
         # Lever arm
         self.lever_x = 0
-        self.lever_y = 0.036
-        self.lever_z = -0.192
+        # self.lever_y = 0.036
+        # self.lever_z = -0.192
+        self.lever_y = 0
+        self.lever_z = 0
          
          
         # Calibrated intrinsics
@@ -99,145 +93,85 @@ class ImageDrone:
         self.K = None
         self.K_inv = None
     
-    
     def extract_metadata(self):
-        """Extract GPS, RPY and distortion parameters from XMP"""
         print(f"--- Processing {os.path.basename(self.image_path)} ---")
-        try:
-            with open(self.image_path, 'rb') as file:
-                data = file.read()
-        except Exception as e:
-            print(f"[ERR] Cannot read image file: {e}")
-            return False
 
-        match = re.search(b'<x:xmpmeta.*?</x:xmpmeta>', data, re.DOTALL)
-        if not match:
-            print("[ERR] No XMP found")
-            return False
+        exif_data = subprocess.check_output([
+            self.exiftool_path,
+            "-json",
+            "-G",
+            "-n",
+            "-EXIF:all",
+            "-XMP:all",
+            "-MakerNotes:all",
+            "-Composite:all",
+            self.image_path
+        ])
 
-        try:
-            xmp_str = match.group(0).decode('utf-8', errors='ignore')
-            root = ET.fromstring(xmp_str)
-        except Exception as e:
-            print(f"[ERR] Failed to parse XMP: {e}")
-            return False
+        meta = json.loads(exif_data)[0]
 
-        lat = lon = alt_abs = alt_rel = 0.0
-        yaw = pitch = roll = 0.0
-        yaw_drone = pitch_drone = roll_drone = 0.0
-        k1 = k2 = k3 = 0.0
-        p1 = p2 = 0.0
-        date_taken = None
-        fx_calib = fy_calib = None
-        cx_calib = cy_calib = None
+        def get(*keys):
+            for k in keys:
+                if k in meta:
+                    return meta[k]
+            return None
+        
+        def getf(*keys, default=0.0):
+            for k in keys:
+                if k in meta and meta[k] not in [None, ""]:
+                    try:
+                        return float(meta[k])
+                    except:
+                        pass
+            return default
 
-        for desc in root.findall('.//{http://www.w3.org/1999/02/22-rdf-syntax-ns#}Description'):
-            for k, v in desc.attrib.items():
-                if 'GpsLatitude' in k:
-                    lat = float(v)
-                elif 'GpsLongtitude' in k or 'GpsLongitude' in k:
-                    lon = float(v)
-                elif 'AbsoluteAltitude' in k:
-                    alt_abs = float(v)
-                elif 'RelativeAltitude' in k:
-                    alt_rel = float(v)
-                elif 'GimbalYawDegree' in k:
-                    yaw = float(v)
-                elif 'GimbalPitchDegree' in k:
-                    pitch = float(v)
-                elif 'GimbalRollDegree' in k:
-                    roll = float(v)
-                elif 'FlightYawDegree' in k:
-                    yaw_drone = float(v)
-                elif 'FlightPitchDegree' in k:
-                    pitch_drone = float(v)
-                elif 'FlightRollDegree' in k:
-                    roll_drone = float(v)
-                elif 'CalibratedOpticalCenterX' in k:
-                    cx_calib = float(v)
-                elif 'CalibratedOpticalCenterY' in k:
-                    cy_calib = float(v)
-                elif 'DewarpData' in k:
-                    parts = v.split(';', 1)[1].split(',')
-                    fx_calib, fy_calib, _, _, k1, k2, p1, p2, k3 = map(float, parts)
-                elif 'CreateDate' in k or 'DateTimeOriginal' in k:
-                    date_taken = v
-            break  
+        # --- Position ---
+        self.lat = get("Composite:GPSLatitude")
+        self.lon = get("Composite:GPSLongitude")
+        self.altitude_absolute = getf("MakerNotes:AbsoluteAltitude")
+        self.altitude_relative = getf("MakerNotes:RelativeAltitude")
 
-        self.lat = lat
-        self.lon = lon
-        self.altitude_absolute = alt_abs
-        self.altitude_relative = alt_rel
-        self.yaw = math.radians(yaw)
-        self.pitch = math.radians(pitch)
-        self.roll = math.radians(roll)
-        self.yaw_drone = math.radians(yaw_drone)
-        self.pitch_drone = math.radians(pitch_drone)
-        self.roll_drone = math.radians(roll_drone)
-        self.k1, self.k2, self.k3 = k1, k2, k3
-        self.p1, self.p2 = p1, p2
-        self.fx_calib = fx_calib
-        self.fy_calib = fy_calib
-        self.cx_calib = cx_calib
-        self.cy_calib = cy_calib
-        self.date_taken = date_taken
+        # --- Angles gimbal ---
+        self.yaw_gimbal   = math.radians(getf("XMP:GimbalYawDegree"))
+        self.pitch_gimbal = math.radians(getf("XMP:GimbalPitchDegree"))
+        self.roll_gimbal  = math.radians(getf("XMP:GimbalRollDegree"))
 
-        print(f"Position: Lat={self.lat:.8f}°, Lon={self.lon:.8f}°, Alt={self.altitude_absolute:.2f} m")
-        print(f"Gimbal: Yaw={math.degrees(self.yaw):.2f}°, Pitch={math.degrees(self.pitch):.2f}°, Roll={math.degrees(self.roll):.2f}°")
-        print(f"Flight: Yaw={math.degrees(self.yaw_drone):.2f}°, Pitch={math.degrees(self.pitch_drone):.2f}°, Roll={math.degrees(self.roll_drone):.2f}°")
+        # --- Angles drone ---
+        self.yaw_drone   = math.radians(getf("XMP:FlightYawDegree"))
+        self.pitch_drone = math.radians(getf("XMP:FlightPitchDegree"))
+        self.roll_drone  = math.radians(getf("XMP:FlightRollDegree"))
+
+        # --- Dewarp / distorsion ---
+        self.dewarpflag = getf("XMP:DewarpFlag")
+
+        dewarp = meta.get("XMP:DewarpData")
+        if dewarp:
+            try:
+                nums = re.findall(r"[-+]?\d*\.\d+|\d+", dewarp)
+                nums = list(map(float, nums))
+
+                if len(nums) > 9:
+                    nums = nums[-9:]
+
+                self.fx_calib, self.fy_calib, _, _, self.k1, self.k2, self.p1, self.p2, self.k3 = nums
+            except Exception as e:
+                print(f"[WARN] DewarpData parse error: {e}")
+
+        # --- Centre optique ---
+        self.cx_calib = getf("XMP:CalibratedOpticalCenterX")
+        self.cy_calib = getf("XMP:CalibratedOpticalCenterY")
+
+        # --- Date ---
+        self.date_taken = get("EXIF:DateTimeOriginal") or get("XMP:CreateDate")
+
+        print(f"Lat={self.lat:.8f}, Lon={self.lon:.8f}")
+        print(f"Gimbal YPR: {math.degrees(self.yaw_gimbal):.2f}, {math.degrees(self.pitch_gimbal):.2f}, {math.degrees(self.roll_gimbal):.2f}")
+        print(f"Drone YPR: {math.degrees(self.yaw_drone):.2f}, {math.degrees(self.pitch_drone):.2f}, {math.degrees(self.roll_drone):.2f}")
+        print(f"Dewarp: {self.dewarpflag}")
+        print(f"Dewarp values : k1 {self.k1},k2 {self.k2}, k3 {self.k3}, p1 {self.p1}, p2 {self.p2}")
+
         return True
-    
-    # def find_declination(self):
-    #     """
-    #     Calculate magnetic declination for the image location and date.
-    #     Compatible avec la version actuelle de geomag (datetime.date obligatoire).
-    #     """
-
-    #     if not self.date_taken:
-    #         print("[WARN] No date → skipping magnetic declination")
-    #         self.declination = 0.0
-    #         return False
-
-    #     if not GEOMAG_AVAILABLE:
-    #         print("[WARN] geomag library not available → skipping magnetic declination")
-    #         self.declination = 0.0
-    #         return False
-
-    #     # --- Parse EXIF/XMP date ---
-    #     raw_date = self.date_taken.strip()
-    #     print(f"[DEBUG] RAW DATE = {raw_date}")
-
-    #     try:
-    #         dt = parser.parse(raw_date)
-    #         dt_date = dt.date()  # important !
-    #         print(f"[DEBUG] Parsed date: {dt_date}")
-    #     except Exception as e:
-    #         print("[ERROR] Could not parse EXIF/XMP date:", raw_date, e)
-    #         self.declination = 0.0
-    #         return False
-
-    #     # --- Calculate magnetic declination ---
-    #     try:
-    #         dec = declination(self.lat, self.lon, self.altitude_absolute, dt_date)
-    #         self.declination = dec
-    #         print(f"[INFO] Magnetic declination = {dec:.2f}°")
-
-    #         # --- Correct yaw ---
-    #         if self.use_magnetic_correction:
-    #             d_rad = math.radians(dec)
-    #             self.yaw       += d_rad
-    #             self.yaw_drone += d_rad
-    #             print(f"[INFO] Yaw corrected +{dec:.2f}°")
-    #             print(f"       New Gimbal Yaw: {math.degrees(self.yaw):.2f}°")
-    #             print(f"       New Drone Yaw : {math.degrees(self.yaw_drone):.2f}°")
-
-    #         return True
-
-    #     except Exception as e:
-    #         print("[ERROR] Declination calculation failed:", e)
-    #         self.declination = 0.0
-    #         return False
-    
+   
     def load_image(self):
         """Load image with OpenCV"""
         self.image_loaded = cv2.imread(self.image_path)
@@ -256,7 +190,6 @@ class ImageDrone:
 
         print(f"Image: {self.width_image_loaded} x {self.height_image_loaded} px, {self.bands} bands")
         return True
-  
     
     def correction_distortion(self):
         """Apply distortion correction"""
@@ -333,8 +266,7 @@ class ImageDrone:
         print(f"[INFO] Ground elevation: {self.ground_elevation:.2f} m")
         print(f"[INFO] Height above ground: {self.height_above_ground:.2f} m")
         return True
-
-    
+   
     def calculate_camera_geometry(self):
         """Calculate camera geometry in normalized coordinates"""
         if self.fx_calib and self.fy_calib:
@@ -356,186 +288,24 @@ class ImageDrone:
         self.center_image_camera = np.array([0.0, 0.0, -1.0])
         return True
 
+    def calculate_rotation_matrix(self,yaw, pitch, roll):
 
-    # def calculate_rotation_matrix(self,yaw, pitch, roll):
-
-    #     if -120 <= math.degrees(pitch) <= -60:
-    #         pitch = math.radians(90) - pitch
-    #     else:
-    #         pitch =  pitch - math.radians(180)
-    #         # pitch = pitch
-
-    #     # pitch += ( math.radians(90))
+        pitch += ( math.radians(90))
   
-    #     Rz = np.array([
-    #         [math.cos(yaw), math.sin(yaw), 0],
-    #         [- math.sin(yaw), math.cos(yaw), 0],
-    #         [0, 0, 1]])
-    #     Ry = np.array([
-    #         [math.cos(pitch), 0, math.sin(pitch)],
-    #         [0, 1, 0],
-    #         [- math.sin(pitch), 0, math.cos(pitch)]])
-    #     Rx = np.array([
-    #         [1, 0, 0],
-    #         [0, math.cos(roll), -math.sin(roll)],
-    #         [0, math.sin(roll), math.cos(roll)]])
-    #     rotation_matrix = Rz @ Ry @ Rx
-    #     return rotation_matrix
-
-    def calculate_rotation_matrix(self, yaw, pitch, roll):
-        """
-        Build rotation matrix using DJI/Euler convention
-        Similar to HighAccuracyFOVCalculator method
-        """
-        # Correction pitch selon la plage d'angles
-        # if -120 <= math.degrees(pitch) <= -60:
-        #     pitch_corrected = math.radians(90) - pitch
-        # else:
-        #     pitch_corrected = math.radians(180) - pitch
-        pitch_corrected = pitch
-        # Correction yaw : conversion Est→Nord
-        # DJI: 0° = Est, on veut 0° = Nord
-        yaw_corrected = (math.pi / 2) - yaw
-        
-        # Normalisation yaw entre 0 et 2π
-        yaw_corrected = yaw_corrected % (2 * math.pi)
-        
-        # Matrices de rotation (ordre ZYX)
         Rz = np.array([
-            [math.cos(yaw_corrected), -math.sin(yaw_corrected), 0],
-            [math.sin(yaw_corrected),  math.cos(yaw_corrected), 0],
-            [0, 0, 1]
-        ])
-        
+            [math.cos(yaw), math.sin(yaw), 0],
+            [- math.sin(yaw), math.cos(yaw), 0],
+            [0, 0, 1]])
         Ry = np.array([
-            [math.cos(pitch_corrected), 0, math.sin(pitch_corrected)],
+            [math.cos(pitch), 0, math.sin(pitch)],
             [0, 1, 0],
-            [-math.sin(pitch_corrected), 0, math.cos(pitch_corrected)]
-        ])
-        
+            [- math.sin(pitch), 0, math.cos(pitch)]])
         Rx = np.array([
             [1, 0, 0],
             [0, math.cos(roll), -math.sin(roll)],
-            [0, math.sin(roll), math.cos(roll)]
-        ])
-        
-        # Composition
+            [0, math.sin(roll), math.cos(roll)]])
         rotation_matrix = Rz @ Ry @ Rx
-        
         return rotation_matrix
-
-    # def ray_dem_intersection(self, pixel_x, pixel_y, dem_dataset, transformer_to_dem):
-    #     """Calculate ray-DEM intersection for a given pixel"""
-    #     if self.K_inv is None:
-    #         return None
-        
-    #     Rotation_camera = self.calculate_rotation_matrix(
-    #         self.yaw, self.pitch, self.roll
-    #     )
-        
-    #     Rotation_drone = self.calculate_rotation_matrix(
-    #         self.yaw_drone, self.pitch_drone, self.roll_drone
-    #     )
-        
-    #     if pixel_x == 0 and pixel_y == 0:  
-    #         print(f"\n[DEBUG] Yaw gimbal: {math.degrees(self.yaw):.2f}°")
-    #         print(f"[DEBUG] Yaw drone: {math.degrees(self.yaw_drone):.2f}°")
-    #         print(f"[DEBUG] Pitch drone: {math.degrees(self.pitch_drone):.2f}°")
-    #         print(f"[DEBUG] ray_world: {ray_world}")
-    #         print(f"[DEBUG] ||ray_world||: {np.linalg.norm(ray_world):.3f}")
-    #         print(f"[DEBUG] trajectory_ground: {trajectory_ground:.2f}m")
-    #         print(f"[DEBUG] Estimated ground hit: ({camera_x + trajectory_ground * ray_world[0]:.2f}, "
-    #             f"{camera_y - trajectory_ground * ray_world[1]:.2f})")
-                
-    #     pixel_source = np.array([pixel_x + 0.5, pixel_y + 0.5, 1.0])
-    #     ray_camera = self.K_inv @ pixel_source
-    #     ray_world = Rotation_camera @ ray_camera
-        
-    #     transformer_wgs84 = Transformer.from_crs("EPSG:4326", f"EPSG:{self.epsg_code}", always_xy=True)
-    #     gps_x, gps_y = transformer_wgs84.transform(self.lon, self.lat)
-    #     gps_z = self.altitude_absolute
-        
-    #     lever_drone = np.array([self.lever_x, self.lever_y, self.lever_z])
-    #     lever_world = Rotation_drone @ lever_drone
-        
-        
-    #     if pixel_x == 0 and pixel_y == 0:
-    #         print(f"[DEBUG] Lever drone: {lever_drone}")
-    #         print(f"[DEBUG] Lever world: {lever_world}")
-    #         print(f"[DEBUG] GPS: ({gps_x:.2f}, {gps_y:.2f}, {gps_z:.2f})")
-    #         print(f"[DEBUG] Camera: ({gps_x + lever_world[0]:.2f}, {gps_y + lever_world[1]:.2f}, {gps_z + lever_world[2]:.2f})")
-        
-    #     camera_x = gps_x + lever_world[0]
-    #     camera_y = gps_y + lever_world[1]
-    #     camera_z = gps_z + lever_world[2]
-        
-    
-    #     if ray_world[2] <= 0:
-    #         return None
-         
-    #     if self.ground_elevation is not None:
-    #         ground_estimate = self.ground_elevation
-    #     else:
-    #         ground_estimate = self.altitude_absolute - abs(self.altitude_relative)
-        
-    #     altitude_diff = camera_z - ground_estimate
-    #     trajectory_ground = altitude_diff / ray_world[2]
-        
-    #     step_size = 0.5
-    #     num_steps = int(trajectory_ground / step_size) + 50
-        
-    #     best_intersection = None
-    #     min_diff = float('inf')
-        
-    #     for i in range(num_steps):
-    #         trajectory = step_size * i
-            
-    #         point_x = camera_x + trajectory * ray_world[0]
-    #         point_y = camera_y + trajectory * ray_world[1]
-    #         point_z = camera_z - trajectory * ray_world[2]
-            
-    #         try:
-    #             dem_x, dem_y = transformer_to_dem.transform(point_x, point_y)
-    #             row, col = dem_dataset.index(dem_x, dem_y)
-
-    #             row_floor = int(np.floor(row))
-    #             col_floor = int(np.floor(col))
-    #             row_frac = row - row_floor
-    #             col_frac = col - col_floor
-                
-    #             if 0 <= row_floor < dem_dataset.height-1 and 0 <= col_floor < dem_dataset.width-1:
-    #                 z11 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor,   row_floor,   1, 1))[0, 0])
-    #                 z21 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor+1, row_floor,   1, 1))[0, 0])
-    #                 z12 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor,   row_floor+1, 1, 1))[0, 0])
-    #                 z22 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor+1, row_floor+1, 1, 1))[0, 0])
-
-    #                 dem_elevation = (
-    #                     z11 * (1-col_frac)*(1-row_frac) +
-    #                     z21 * col_frac*(1-row_frac) +
-    #                     z12 * (1-col_frac)*row_frac +
-    #                     z22 * col_frac*row_frac
-    #                 )
-    #             elif 0 <= row_floor < dem_dataset.height and 0 <= col_floor < dem_dataset.width:
-    #                 dem_elevation = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor, row_floor, 1, 1))[0, 0])
-    #             else:
-    #                 continue
-                
-    #             diff = abs(point_z - dem_elevation)
-                
-    #             if diff < 0.1:
-    #                 return (point_x, point_y, dem_elevation)
-                
-    #             if diff < min_diff:
-    #                 min_diff = diff
-    #                 best_intersection = (point_x, point_y, dem_elevation)
-                
-    #             if point_z < dem_elevation:
-    #                 break
-                    
-    #         except Exception:
-    #             continue
-          
-    #     return best_intersection
 
     def ray_dem_intersection(self, pixel_x, pixel_y, dem_dataset, transformer_to_dem):
         """Calculate ray-DEM intersection for a given pixel"""
@@ -543,7 +313,7 @@ class ImageDrone:
             return None
         
         Rotation_camera = self.calculate_rotation_matrix(
-            self.yaw, self.pitch, self.roll
+            self.yaw_gimbal, self.pitch_gimbal, self.roll_gimbal
         )
         
         Rotation_drone = self.calculate_rotation_matrix(
@@ -551,11 +321,16 @@ class ImageDrone:
         )
         
         # Calcul du rayon
-        # pixel_source = np.array([pixel_x + 0.5, pixel_y + 0.5, 1.0])
         pixel_source = np.array([pixel_x, pixel_y, 1.0])
         ray_camera = self.K_inv @ pixel_source
         ray_world_raw = Rotation_camera @ ray_camera
-        ray_world = ray_world_raw / np.linalg.norm(ray_world_raw)  # ← NORMALISATION
+
+        # if ray_world_raw[2] > 0:
+        #     ray_world_raw[2] = -ray_world_raw[2]  
+        #     print(f"[FIX] Ray inversé: {ray_world_raw}")
+
+
+        ray_world = ray_world_raw / np.linalg.norm(ray_world_raw)  
         
         # Transformation GPS
         transformer_wgs84 = Transformer.from_crs("EPSG:4326", f"EPSG:{self.epsg_code}", always_xy=True)
@@ -570,7 +345,7 @@ class ImageDrone:
         camera_y = gps_y - lever_world[1]
         camera_z = gps_z - lever_world[2]
         
-        # Vérification ray valide
+        # Check ray valid
         if ray_world[2] <= 0:
             return None
         
@@ -581,34 +356,8 @@ class ImageDrone:
             ground_estimate = self.altitude_absolute - abs(self.altitude_relative)
         
         altitude_diff = camera_z - ground_estimate
-        trajectory_ground = abs(altitude_diff / ray_world[2])  # ← abs() ajouté !
-        
-        # ===== DEBUG ICI, APRÈS TOUS LES CALCULS =====
-        if pixel_x == 0 and pixel_y == 0:  
-            print(f"\n[DEBUG] === ANGLES ===")
-            print(f"[DEBUG] Yaw gimbal: {math.degrees(self.yaw):.2f}°")
-            print(f"[DEBUG] Yaw drone: {math.degrees(self.yaw_drone):.2f}°")
-            print(f"[DEBUG] Pitch drone: {math.degrees(self.pitch_drone):.2f}°")
-            
-            print(f"\n[DEBUG] === RAY ===")
-            print(f"[DEBUG] ray_world: {ray_world}")
-            print(f"[DEBUG] ||ray_world||: {np.linalg.norm(ray_world):.3f}")
-            
-            print(f"\n[DEBUG] === POSITIONS ===")
-            print(f"[DEBUG] GPS: ({gps_x:.2f}, {gps_y:.2f}, {gps_z:.2f})")
-            print(f"[DEBUG] Lever drone: {lever_drone}")
-            print(f"[DEBUG] Lever world: {lever_world}")
-            print(f"[DEBUG] Camera: ({camera_x:.2f}, {camera_y:.2f}, {camera_z:.2f})")
-            
-            print(f"\n[DEBUG] === TRAJECTORY ===")
-            print(f"[DEBUG] Ground estimate: {ground_estimate:.2f}m")
-            print(f"[DEBUG] Altitude diff: {altitude_diff:.2f}m")
-            print(f"[DEBUG] trajectory_ground: {trajectory_ground:.2f}m")
-            print(f"[DEBUG] Estimated ground hit: ({camera_x + trajectory_ground * ray_world[0]:.2f}, "
-                f"{camera_y + trajectory_ground * ray_world[1]:.2f}, "
-                f"{camera_z - trajectory_ground * ray_world[2]:.2f})")
-        
-        # Boucle de recherche
+        trajectory_ground = abs(altitude_diff / ray_world[2])  
+  
         step_size = 0.5
         num_steps = int(trajectory_ground / step_size) + 50
         
@@ -664,7 +413,6 @@ class ImageDrone:
                 continue
         
         return best_intersection
-
 
     def georeference_with_dem_precise(self, output_path, subsample=100):
         """
@@ -754,7 +502,6 @@ class ImageDrone:
             print(f"[OK] GeoTIFF created: {output_path}")
             return True
 
-
     def save_geotiff(self, output_path):
         """Save georeferenced image (fast method)"""
         if self.transform is None:
@@ -810,19 +557,19 @@ class ImageDrone:
         print(f"[OK] Cropped GeoTIFF: {output_path}")
         print(f"[INFO] Original: {w}x{h} → Cropped: {new_w}x{new_h}")
         return True
-
-
+    
 if __name__ == "__main__":
 
     load_dotenv()
     image_folder = Path(os.getenv("IMAGE_FOLDER"))
     DEM_path = Path(os.getenv("DEM_PATH"))
+    exiftool_path = Path(os.getenv("Exiftool_path"))
     print(image_folder)
-    output_folder = image_folder / "georef_precise"
+    output_folder = image_folder / "georef_precise_fluxes"
     print(output_folder.exists())
     os.makedirs(output_folder, exist_ok=True)
 
-    target_index = 236
+    target_index = 101
 
     prefix = os.path.basename(image_folder)
     img_number = str(target_index).zfill(4)
@@ -835,32 +582,37 @@ if __name__ == "__main__":
         # Enable magnetic declination correction
         drone_image = ImageDrone(
             image_path, 
+            exiftool_path,
             DEM_path=DEM_path, 
-            epsg_code=32738,
-            use_magnetic_correction=True
+            epsg_code=32738
         )  
         
         print("\n=== STEP 1: PREPARATION ===")
         drone_image.extract_metadata()
-        # drone_image.find_declination()  
         drone_image.load_image()
-        drone_image.correction_distortion()
-        # drone_image.calculate_rotation_matrix()
+        if drone_image.dewarpflag == 0:
+            print("[INFO] Applying lens distortion correction")
+            drone_image.correction_distortion()
+        else:
+            drone_image.image_undistorted = drone_image.image_loaded
+            drone_image.height_image_undistorted = drone_image.height_image_loaded
+            drone_image.width_image_undistorted = drone_image.width_image_loaded
+            print("[INFO] Image already dewarped by DJI : skipping distortion correction")
         drone_image.calculate_camera_geometry()
         drone_image.calculate_flight_height()
         
         print("\n=== STEP 2: PRECISE GEOREFERENCING ===")
         output_name = os.path.splitext(image_name)[0] + "_PRECISE_FULL.tif"
         output_path = os.path.join(output_folder, output_name)
-        
+
         success = drone_image.georeference_with_dem_precise(
             output_path, 
-            subsample=200  
-        )
+            subsample=200)  
+        
         
         if success:
             print("\n=== STEP 3: CROP CENTER 75% ===")
-            output_cropped = os.path.splitext(image_name)[0] + "_PRECISE_CROPPED5.tif"
+            output_cropped = os.path.splitext(image_name)[0] + "_PRECISE_CROPPED_FLUX.tif"
             output_path_cropped = os.path.join(output_folder, output_cropped)
             
             drone_image.crop_geotiff_center_75_percent(output_path, output_path_cropped)
