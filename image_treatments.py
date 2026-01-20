@@ -92,9 +92,6 @@ class ImageDrone:
         # Camera intrinsics
         self.K = None
         self.K_inv = None
-    
-
-    
     def extract_metadata(self):
         print(f"--- Processing {os.path.basename(self.image_path)} ---")
 
@@ -560,70 +557,6 @@ class ImageDrone:
         print(f"[INFO] Original: {w}x{h} → Cropped: {new_w}x{new_h}")
         return True
     
-# if __name__ == "__main__":
-
-#    load_dotenv()
-#     image_folder = Path(os.getenv("IMAGE_FOLDER"))
-#     DEM_path = Path(os.getenv("DEM_PATH"))
-#     exiftool_path = Path(os.getenv("Exiftool_path"))
-#     print(image_folder)
-#     output_folder = image_folder / "georef_precise_fluxes"
-#     print(output_folder.exists())
-#     os.makedirs(output_folder, exist_ok=True)
-
-#     target_index = 101
-
-#     prefix = os.path.basename(image_folder)
-#     img_number = str(target_index).zfill(4)
-#     image_name = f"{prefix}_{img_number}.jpg"
-#     image_path = os.path.join(image_folder, image_name)
-
-#     if not os.path.exists(image_path):
-#         print(f"[ERR] Image {image_name} not found.")
-#     else:
-#         # Enable magnetic declination correction
-#         drone_image = ImageDrone(
-#             image_path, 
-#             exiftool_path,
-#             DEM_path=DEM_path, 
-#             epsg_code=32738
-#         )  
-        
-#         print("\n=== STEP 1: PREPARATION ===")
-#         drone_image.extract_metadata()
-#         drone_image.load_image()
-#         if drone_image.dewarpflag == 0:
-#             print("[INFO] Applying lens distortion correction")
-#             drone_image.correction_distortion()
-#         else:
-#             drone_image.image_undistorted = drone_image.image_loaded
-#             drone_image.height_image_undistorted = drone_image.height_image_loaded
-#             drone_image.width_image_undistorted = drone_image.width_image_loaded
-#             print("[INFO] Image already dewarped by DJI : skipping distortion correction")
-#         drone_image.calculate_camera_geometry()
-#         drone_image.calculate_flight_height()
-        
-#         print("\n=== STEP 2: PRECISE GEOREFERENCING ===")
-#         output_name = os.path.splitext(image_name)[0] + "_PRECISE_FULL.tif"
-#         output_path = os.path.join(output_folder, output_name)
-
-#         success = drone_image.georeference_with_dem_precise(
-#             output_path, 
-#             subsample=200)  
-        
-        
-#         if success:
-#             print("\n=== STEP 3: CROP CENTER 75% ===")
-#             output_cropped = os.path.splitext(image_name)[0] + "_PRECISE_CROPPED_FLUX.tif"
-#             output_path_cropped = os.path.join(output_folder, output_cropped)
-            
-#             drone_image.crop_geotiff_center_75_percent(output_path, output_path_cropped)
-            
-#             print("\n✓ SUCCESS!")
-#             print(f"  Full GeoTIFF: {output_path}")
-#             print(f"  Cropped GeoTIFF: {output_path_cropped}")
-#         else:
-#             print("\n✗ FAILED")
 
 if __name__ == "__main__":
 
@@ -698,3 +631,5 @@ if __name__ == "__main__":
 
     else:
         print("\n✗ FAILED")
+
+        
