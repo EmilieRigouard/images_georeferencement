@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Pixel-by-pixel georeferencing using DEM
 Based on OpenDroneMap techniques
@@ -24,9 +23,8 @@ from datetime import datetime
 from dateutil import parser
 import subprocess
 import json
-from osgeo import gdal, osr
-
-
+import quaternion
+import geomag
 
 class ImageDrone:
     """Georeference DJI drone images with RTK precision"""
@@ -42,6 +40,7 @@ class ImageDrone:
         self.sensor_width_mm = sensor_width_mm
         self.sensor_height_mm = sensor_height_mm
         self.focal_length_mm = focal_length_mm
+        self.declination = 0.0  # Default declination
 
         
         # Metadata from XMP
@@ -132,17 +131,17 @@ class ImageDrone:
         self.altitude_absolute = getf("MakerNotes:AbsoluteAltitude")
         self.altitude_relative = getf("MakerNotes:RelativeAltitude")
 
-        # --- Gimbal angles ---
+        # --- Angles gimbal ---
         self.yaw_gimbal   = math.radians(getf("XMP:GimbalYawDegree"))
         self.pitch_gimbal = math.radians(getf("XMP:GimbalPitchDegree"))
         self.roll_gimbal  = math.radians(getf("XMP:GimbalRollDegree"))
 
-        # --- Drone angles ---
+        # --- Angles drone ---
         self.yaw_drone   = math.radians(getf("XMP:FlightYawDegree"))
         self.pitch_drone = math.radians(getf("XMP:FlightPitchDegree"))
         self.roll_drone  = math.radians(getf("XMP:FlightRollDegree"))
 
-        # --- Distortion ---
+        # --- Dewarp / distorsion ---
         self.dewarpflag = getf("XMP:DewarpFlag")
 
         dewarp = meta.get("XMP:DewarpData")
@@ -158,7 +157,7 @@ class ImageDrone:
             except Exception as e:
                 print(f"[WARN] DewarpData parse error: {e}")
 
-        # --- Optical center ---
+        # --- Centre optique ---
         self.cx_calib = getf("XMP:CalibratedOpticalCenterX")
         self.cy_calib = getf("XMP:CalibratedOpticalCenterY")
 
@@ -268,184 +267,105 @@ class ImageDrone:
         print(f"[INFO] Height above ground: {self.height_above_ground:.2f} m")
         return True
    
-    # def calculate_camera_geometry(self):
-    #     """Calculate camera geometry in normalized coordinates"""
-    #     if self.fx_calib and self.fy_calib:
-    #         fx = self.fx_calib
-    #         fy = self.fy_calib
-    #     else:
-    #         fx = self.focal_length_mm * self.width_image_undistorted / self.sensor_width_mm
-    #         fy = self.focal_length_mm * self.height_image_undistorted / self.sensor_height_mm
+    def get_projected_corners(self):
+        """
+        Calcule les coins projetés au sol selon la perspective réelle (avec correction magnétique si self.declination)
+        Retourne une liste de 4 points [x, y, z] en coordonnées projetées (EPSG)
+        """
+        # FOV en radians
+        FOVw = 2 * math.atan(self.sensor_width_mm / (2 * self.focal_length_mm))
+        FOVh = 2 * math.atan(self.sensor_height_mm / (2 * self.focal_length_mm))
 
-    #     half_w_norm = (self.width_image_undistorted / 2.0) / fx
-    #     half_h_norm = (self.height_image_undistorted / 2.0) / fy
+        # Vecteurs coins dans le repère caméra
+        rays = [
+            np.array([-math.tan(FOVh/2),  math.tan(FOVw/2), 1.0]),
+            np.array([-math.tan(FOVh/2), -math.tan(FOVw/2), 1.0]),
+            np.array([ math.tan(FOVh/2), -math.tan(FOVw/2), 1.0]),
+            np.array([ math.tan(FOVh/2),  math.tan(FOVw/2), 1.0])
+        ]
+        rays = [v/np.linalg.norm(v) for v in rays]
 
-    #     self.corners_camera = np.array([
-    #         [-half_w_norm,  half_h_norm, -1.0],
-    #         [ half_w_norm,  half_h_norm, -1.0],
-    #         [ half_w_norm, -half_h_norm, -1.0],
-    #         [-half_w_norm, -half_h_norm, -1.0]
-    #     ])
-    #     self.center_image_camera = np.array([0.0, 0.0, -1.0])
-    #     return True
+        # Correction magnétique sur le yaw si self.declination est défini (en radians)
+        yaw_corr = self.yaw_gimbal
+        if hasattr(self, 'declination') and self.declination:
+            yaw_corr = self.yaw_gimbal + self.declination
+        print(f"Yaw gimbal (rad): {self.yaw_gimbal:.4f}, Declinaison (rad): {self.declination:.4f}, Yaw corrigé (rad): {yaw_corr:.4f} | (deg): {math.degrees(self.yaw_gimbal):.2f}, {math.degrees(self.declination):.2f}, {math.degrees(yaw_corr):.2f}")
+        pitch_gimbal_corr = self.pitch_gimbal + math.radians(90)
+        roll_gimbal_corr = self.roll_gimbal + math.radians(180)
+        q = quaternion.from_euler_angles(yaw_corr, pitch_gimbal_corr, roll_gimbal_corr)
+        q = q.normalized()
+        # Appliquer la rotation à chaque rayon
+        rays_world = [np.array((q * np.quaternion(0, *v) * q.inverse()).vec) for v in rays]
 
-    def calculate_camera_geometry(self):
-        """Calcule les rayons des coins avec divergence perspective"""
-        
-        # Calculer le FOV en radians
-        if self.fx_calib and self.fy_calib:
-            fx = self.fx_calib
-            fy = self.fy_calib
-        else:
-            fx = self.focal_length_mm * self.width_image_undistorted / self.sensor_width_mm
-            fy = self.focal_length_mm * self.height_image_undistorted / self.sensor_height_mm
-        
-        # FOV = 2 * arctan(sensor / (2 * focal))
-        FOV_h = 2 * np.arctan(self.width_image_undistorted / (2 * fx))
-        FOV_v = 2 * np.arctan(self.height_image_undistorted / (2 * fy))
-        
-        # Créer des rayons qui DIVERGENT (comme code 1)
-        self.corners_camera = np.array([
-            [-np.tan(FOV_v/2), np.tan(FOV_h/2), 1.0],   # Haut-gauche
-            [ np.tan(FOV_v/2), np.tan(FOV_h/2), 1.0],   # Haut-droit
-            [ np.tan(FOV_v/2), -np.tan(FOV_h/2), 1.0],  # Bas-droit
-            [-np.tan(FOV_v/2), -np.tan(FOV_h/2), 1.0]   # Bas-gauche
-        ])
-        
-        # NORMALISER les rayons (garder juste la direction)
-        for i in range(len(self.corners_camera)):
-            norm = np.linalg.norm(self.corners_camera[i])
-            self.corners_camera[i] = self.corners_camera[i] / norm
-        
-        self.center_image_camera = np.array([0.0, 0.0, 1.0])
-        return True
-
-    def calculate_rotation_matrix(self,yaw, pitch, roll):
-
-        pitch += ( math.radians(90))
-  
-        Rz = np.array([
-            [math.cos(yaw), math.sin(yaw), 0],
-            [- math.sin(yaw), math.cos(yaw), 0],
-            [0, 0, 1]])
-        Ry = np.array([
-            [math.cos(pitch), 0, - math.sin(pitch)],
-            [0, 1, 0],
-            [math.sin(pitch), 0, math.cos(pitch)]])
-        Rx = np.array([
-            [1, 0, 0],
-            [0, math.cos(roll), math.sin(roll)],
-            [0, - math.sin(roll), math.cos(roll)]])
-        rotation_matrix = Rz.dot(Ry).dot(Rx)
-        return rotation_matrix
-
-    def ray_dem_intersection(self, pixel_x, pixel_y, dem_dataset, transformer_to_dem):
-        """Calculate ray-DEM intersection for a given pixel"""
-        if self.K_inv is None:
-            return None
-        
-        Rotation_camera = self.calculate_rotation_matrix(
-            self.yaw_gimbal, self.pitch_gimbal, self.roll_gimbal
-        )
-        
-        Rotation_drone = self.calculate_rotation_matrix(
-            self.yaw_drone, self.pitch_drone, self.roll_drone
-        )
-        
-        # Calcul du rayon
-        pixel_source = np.array([pixel_x, pixel_y, 1.0])
-        ray_camera = self.K_inv @ pixel_source
-        ray_world_raw = Rotation_camera @ ray_camera
-
-        # if ray_world_raw[2] > 0:
-        #     ray_world_raw[2] = -ray_world_raw[2]  
-        #     print(f"[FIX] Ray inversé: {ray_world_raw}")
-
-
-        ray_world = ray_world_raw / np.linalg.norm(ray_world_raw)  
-        
-        # Transformation GPS
+        # Origine caméra
         transformer_wgs84 = Transformer.from_crs("EPSG:4326", f"EPSG:{self.epsg_code}", always_xy=True)
         gps_x, gps_y = transformer_wgs84.transform(self.lon, self.lat)
         gps_z = self.altitude_absolute
-        
-        # Lever arm
-        lever_drone = np.array([self.lever_x, self.lever_y, self.lever_z])
-        lever_world = Rotation_drone @ lever_drone
-        
-        camera_x = gps_x - lever_world[0]
-        camera_y = gps_y - lever_world[1]
-        camera_z = gps_z - lever_world[2]
-        
-        # Check ray valid
-        if ray_world[2] <= 0:
-            return None
-        
-        # Calcul trajectory
-        if self.ground_elevation is not None:
-            ground_estimate = self.ground_elevation
-        else:
-            ground_estimate = self.altitude_absolute - abs(self.altitude_relative)
-        
-        altitude_diff = camera_z - ground_estimate
-        trajectory_ground = abs(altitude_diff / ray_world[2])  
-  
-        step_size = 0.5
-        num_steps = int(trajectory_ground / step_size) + 50
-        
-        best_intersection = None
-        min_diff = float('inf')
-        
-        for i in range(num_steps):
-            trajectory = step_size * i
-            
-            point_x = camera_x + trajectory * ray_world[0]
-            point_y = camera_y + trajectory * ray_world[1]  
-            point_z = camera_z - trajectory * ray_world[2]
-            
-            try:
-                dem_x, dem_y = transformer_to_dem.transform(point_x, point_y)
-                row, col = dem_dataset.index(dem_x, dem_y)
+        lever = np.array([self.lever_x, self.lever_y, self.lever_z])
+        camera_pos = np.array([gps_x-lever[0], gps_y-lever[1], gps_z-lever[2]])
 
-                row_floor = int(np.floor(row))
-                col_floor = int(np.floor(col))
-                row_frac = row - row_floor
-                col_frac = col - col_floor
-                
-                if 0 <= row_floor < dem_dataset.height-1 and 0 <= col_floor < dem_dataset.width-1:
-                    z11 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor,   row_floor,   1, 1))[0, 0])
-                    z21 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor+1, row_floor,   1, 1))[0, 0])
-                    z12 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor,   row_floor+1, 1, 1))[0, 0])
-                    z22 = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor+1, row_floor+1, 1, 1))[0, 0])
-
-                    dem_elevation = (
-                        z11 * (1-col_frac)*(1-row_frac) +
-                        z21 * col_frac*(1-row_frac) +
-                        z12 * (1-col_frac)*row_frac +
-                        z22 * col_frac*row_frac
-                    )
-                elif 0 <= row_floor < dem_dataset.height and 0 <= col_floor < dem_dataset.width:
-                    dem_elevation = float(dem_dataset.read(1, window=rasterio.windows.Window(col_floor, row_floor, 1, 1))[0, 0])
-                else:
-                    continue
-                
-                diff = abs(point_z - dem_elevation)
-                
-                if diff < 0.1:
-                    return (point_x, point_y, dem_elevation)
-                
-                if diff < min_diff:
-                    min_diff = diff
-                    best_intersection = (point_x, point_y, dem_elevation)
-                
-                if point_z < dem_elevation:
-                    break
-                    
-            except Exception:
+        # Intersection avec le sol (z=ground_elevation ou z=0 si pas DEM)
+        ground_z = self.ground_elevation if self.ground_elevation is not None else (self.altitude_absolute-abs(self.altitude_relative))
+        corners_world = []
+        for ray in rays_world:
+            if ray[2] == 0:
                 continue
-        
-        return best_intersection
+            t = (ground_z - camera_pos[2]) / ray[2]
+            pt = camera_pos + ray * t
+            corners_world.append(pt)
+        self.corners_world = np.array(corners_world)
+        return self.corners_world
 
+    def find_declination(self):
+        """
+        Calculate magnetic declination for the image location and date.
+        Compatible avec la version actuelle de geomag (datetime.date obligatoire).
+        """
+
+        if not self.date_taken:
+            print("[WARN] No date → skipping magnetic declination")
+            self.declination = 0.0
+            return False
+
+        if not GEOMAG_AVAILABLE:
+            print("[WARN] geomag library not available → skipping magnetic declination")
+            self.declination = 0.0
+            return False
+
+        # --- Parse EXIF/XMP date ---
+        raw_date = self.date_taken.strip()
+        print(f"[DEBUG] RAW DATE = {raw_date}")
+
+        try:
+            dt = parser.parse(raw_date)
+            dt_date = dt.date()  # important !
+            print(f"[DEBUG] Parsed date: {dt_date}")
+        except Exception as e:
+            print("[ERROR] Could not parse EXIF/XMP date:", raw_date, e)
+            self.declination = 0.0
+            return False
+
+        # --- Calculate magnetic declination ---
+        try:
+            dec = declination(self.lat, self.lon, self.altitude_absolute, dt_date)
+            self.declination = dec
+            print(f"[INFO] Magnetic declination = {dec:.2f}°")
+
+            # --- Correct yaw ---
+            if self.use_magnetic_correction:
+                d_rad = math.radians(dec)
+                self.yaw       += d_rad
+                self.yaw_drone += d_rad
+                print(f"[INFO] Yaw corrected +{dec:.2f}°")
+                print(f"       New Gimbal Yaw: {math.degrees(self.yaw):.2f}°")
+                print(f"       New Drone Yaw : {math.degrees(self.yaw_drone):.2f}°")
+
+            return True
+
+        except Exception as e:
+            print("[ERROR] Declination calculation failed:", e)
+            self.declination = 0.0
+            return False
 
     def georeference_with_dem_precise(self, output_path, subsample=100):
         """
@@ -480,16 +400,15 @@ class ImageDrone:
                         progress = (processed / total_pixels) * 100
                         print(f"[INFO] Progress: {progress:.1f}%", end='\r')
                     
-                    intersection = self.ray_dem_intersection(
-                        col, row, dem_dataset, transformer_to_dem
-                    )
-                    
-                    if intersection is not None:
-                        x_world, y_world, z_world = intersection
+                    # Utilisation directe des coins projetés pour les GCPs
+                    corners = self.get_projected_corners()
+                    for idx, pt in enumerate(corners):
                         gcps.append({
-                            'pixel': (col, row),
-                            'world': (x_world, y_world, z_world)
+                            'pixel': (int([0, self.width_image_undistorted, self.width_image_undistorted, 0][idx]),
+                                      int([0, 0, self.height_image_undistorted, self.height_image_undistorted][idx])),
+                            'world': (pt[0], pt[1], pt[2])
                         })
+                    break  # On ne fait qu'une fois pour les 4 coins
             
             print(f"\n[INFO] {len(gcps)} GCPs generated")
             
@@ -507,84 +426,33 @@ class ImageDrone:
                 )
                 for gcp in gcps
             ]
-
-            # Créer un dataset en mémoire avec les GCPs
-            driver = gdal.GetDriverByName('MEM')
-            mem_ds = driver.Create(
-                '',
-                self.width_image_undistorted,
-                self.height_image_undistorted,
-                self.bands,
-                gdal.GDT_Byte
-            )
             
-            # Écrire l'image
-            image_to_write = np.rot90(self.image_undistorted, k=2)
-            image_to_write = np.fliplr(image_to_write)
+            transform = from_gcps(rasterio_gcps)
             
-            for i in range(self.bands):
-                mem_ds.GetRasterBand(i + 1).WriteArray(image_to_write[:, :, i])
-            
-            # Ajouter les GCPs
-            gcp_list = [
-                gdal.GCP(
-                    gcp['world'][0],  # x
-                    gcp['world'][1],  # y
-                    gcp['world'][2],  # z
-                    gcp['pixel'][0],  # pixel
-                    gcp['pixel'][1]   # line
-                )
-                for gcp in gcps
-            ]
-            
-            # Définir la projection
-            srs = osr.SpatialReference()
-            srs.ImportFromEPSG(self.epsg_code)
-            
-            mem_ds.SetGCPs(gcp_list, srs.ExportToWkt())
-            
-            # Warper avec transformation polynomiale ou TPS
-            warp_options = gdal.WarpOptions(
-                dstSRS=f'EPSG:{self.epsg_code}',
-                transformerOptions=['METHOD=GCP_TPS'],  # Thin Plate Spline!
-                resampleAlg=gdal.GRA_Bilinear,
-                format='GTiff',
-                creationOptions=['COMPRESS=LZW']
-            )
-            
-            gdal.Warp(output_path, mem_ds, options=warp_options)
-            
-            mem_ds = None
-            print(f"[OK] GeoTIFF created with TPS: {output_path}")
-            return True
-            
-            # transform = from_gcps(rasterio_gcps)
-            
-            # # Fix image orientation
-            # # image_to_save = self.image_undistorted
-            # image_to_save = np.rot90(self.image_undistorted, k=2)
-            # image_to_save = np.fliplr(image_to_save)
-            # # image_to_save = np.flipud(image_to_save)
+            # Fix image orientation
+            # image_to_save = self.image_undistorted
+            image_to_save = np.rot90(self.image_undistorted, k=2)
+            image_to_save = np.fliplr(image_to_save)
+            # image_to_save = np.flipud(image_to_save)
             
 
-            # with rasterio.open(
-            #     output_path,
-            #     'w',
-            #     driver='GTiff',
-            #     height=self.height_image_undistorted,
-            #     width=self.width_image_undistorted,
-            #     count=self.bands,
-            #     dtype=image_to_save.dtype,
-            #     crs=CRS.from_epsg(self.epsg_code),
-            #     transform=transform,
-            #     compress='lzw'
-            # ) as dst:
-            #     for i in range(self.bands):
-            #         dst.write(image_to_save[:, :, i], i + 1)
+            with rasterio.open(
+                output_path,
+                'w',
+                driver='GTiff',
+                height=self.height_image_undistorted,
+                width=self.width_image_undistorted,
+                count=self.bands,
+                dtype=image_to_save.dtype,
+                crs=CRS.from_epsg(self.epsg_code),
+                transform=transform,
+                compress='lzw'
+            ) as dst:
+                for i in range(self.bands):
+                    dst.write(image_to_save[:, :, i], i + 1)
          
-            # print(f"[OK] GeoTIFF created: {output_path}")
-            # return True
-
+            print(f"[OK] GeoTIFF created: {output_path}")
+            return True
 
     def save_geotiff(self, output_path):
         """Save georeferenced image (fast method)"""
@@ -656,28 +524,31 @@ if __name__ == "__main__":
     output_folder = image_folder / "georef_precise_fluxes"
     os.makedirs(output_folder, exist_ok=True)
 
-
-    # image_name = input("Image Name :").strip()
-    # image_path = image_folder / image_name
-
-    images = sorted(image_folder.glob("*.JPG"))
-
+    # List available images (try both .JPG and .jpg)
+    images = sorted(image_folder.glob("*.JPG")) + sorted(image_folder.glob("*.jpg"))
+    images = list(dict.fromkeys(images))  # Remove duplicates
+    
     if not images:
-        raise RuntimeError("No JPG images found")
-
-    print("Images found:")
+        print(f"[ERR] No JPG images found in {image_folder}")
+        print(f"[INFO] Contents of {image_folder}:")
+        if image_folder.exists():
+            for item in image_folder.iterdir():
+                print(f"  - {item.name}")
+        else:
+            print(f"[ERR] Folder does not exist!")
+        exit(1)
+    
+    print("\n=== AVAILABLE IMAGES ===")
     for i, img in enumerate(images):
         print(f"{i} → {img.name}")
-
-    idx = int(input("Choose image number: "))
-    image_path = images[idx]
-    image_name = image_path.name
-
-
-    if not image_path.exists():
-        print(f"[ERR] Image {image_name} not found in {image_folder}")
+    
+    idx = int(input("\nChoose image number: "))
+    
+    if idx < 0 or idx >= len(images):
+        print(f"[ERR] Invalid index {idx}")
         exit(1)
-
+    
+    image_path = images[idx]
 
     drone_image = ImageDrone(
         str(image_path),
@@ -700,7 +571,9 @@ if __name__ == "__main__":
         drone_image.width_image_undistorted = drone_image.width_image_loaded
         print("[INFO] Image already dewarped by DJI : skipping distortion correction")
 
-    drone_image.calculate_camera_geometry()
+    # Rotation de la photo à 180°
+    # drone_image.image_undistorted = np.rot90(drone_image.image_undistorted, 2)
+    drone_image.get_projected_corners()
     drone_image.calculate_flight_height()
 
     print("\n=== STEP 2: PRECISE GEOREFERENCING ===")
@@ -716,7 +589,7 @@ if __name__ == "__main__":
     if success:
         print("\n=== STEP 3: CROP CENTER 75% ===")
 
-        output_cropped = image_path.stem + "_PRECISE_CROPPED_FLUX_2.tif"
+        output_cropped = image_path.stem + "_PRECISE_CROPPED_FLUX2.tif"
         output_path_cropped = output_folder / output_cropped
 
         drone_image.crop_geotiff_center_75_percent(
@@ -730,5 +603,3 @@ if __name__ == "__main__":
 
     else:
         print("\n✗ FAILED")
-
-        
